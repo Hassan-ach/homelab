@@ -1,7 +1,5 @@
-# Ignore everything by default
 *
 
-# Keep only these specific files and folders
 !install.sh
 !docker-compose.yml
 !README.md
@@ -9,3 +7,19 @@
 !docs/**
 !.gitignore
 !.env.example
+
+!*/config/
+!*/config/**
+!*.conf
+!*.yml
+!*.yaml
+!*.json
+
+.env
+*/data/
+*/cache/
+*/logs/
+*.log
+*.key
+*.pem
+*.crt
