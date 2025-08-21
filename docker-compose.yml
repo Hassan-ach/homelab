@@ -1,0 +1,203 @@
+services:
+  nextcloud:
+    image: lscr.io/linuxserver/nextcloud:latest
+    container_name: nextcloud
+    restart: unless-stopped
+    volumes:
+      - ${COMMUNE_DIR}nextcloud/config:/config
+      - ${COMMUNE_DIR}nextcloud/data:/data
+      - ${COMMUNE_DIR}nextcloud/logs:/var/log/nextcloud
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - REDIS_HOST=redis
+      - REDIS_HOST_PASSWORD=${REDIS_PASSWORD}
+      - MYSQL_HOST=db
+      - MYSQL_DATABASE=${DB_NAME}
+      - MYSQL_USER=${DB_USER}
+      - MYSQL_PASSWORD=${DB_NC_PASSWORD}
+      - NEXTCLOUD_ADMIN_USER=${ADMIN_NAME}
+      - NEXTCLOUD_ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - NEXTCLOUD_TRUSTED_DOMAINS=${TRUSTED_DOMAINS}
+      - OVERWRITEPROTOCOL=https
+      - OVERWRITEHOST=${URL}
+      - APACHE_DISABLE_REWRITE_IP=1
+      - PHP_UPLOAD_LIMIT=10G
+      - APACHE_BODY_LIMIT=0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - 80
+    networks:
+      - frontend_network
+      - backend_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/status.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    mem_limit: 2G
+    mem_reservation: 512M
+    cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    volumes:
+      - ${COMMUNE_DIR}jellyfin/config:/config
+      - ${COMMUNE_DIR}jellyfin/cache:/cache
+      - ${COMMUNE_DIR}nextcloud/data/media:/data:ro
+      - ${COMMUNE_DIR}jellyfin/logs:/var/log/jellyfin
+      - /dev/dri:/dev/dri
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - JELLYFIN_PublishedServerUrl=https://jellyfin.${URL}
+    devices:
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
+    expose:
+      - 8096
+    networks:
+      - frontend_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    mem_limit: 2G
+    mem_reservation: 512M
+    cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+  db:
+    image: lscr.io/linuxserver/mariadb:latest
+    container_name: mariadb
+    volumes:
+      - ${COMMUNE_DIR}mysql/data:/var/lib/mysql
+      - ${COMMUNE_DIR}mysql/config:/config
+      - ${COMMUNE_DIR}mysql/logs:/var/log/mysql
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_PASSWORD=${DB_NC_PASSWORD}
+      - MYSQL_DATABASE=${DB_NAME}
+      - MYSQL_USER=${DB_USER}
+    restart: unless-stopped
+    expose:
+      - 3306
+    networks:
+      - backend_network
+    command: >
+      --transaction-isolation=READ-COMMITTED --binlog-format=ROW --innodb-buffer-pool-size=128M --max-connections=50 --innodb-flush-log-at-trx-commit=2 --innodb-log-buffer-size=16M --max-allowed-packet=64M
+
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1G
+    mem_reservation: 256M
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    volumes:
+      - ${COMMUNE_DIR}redis/data:/data
+      - ${COMMUNE_DIR}redis/logs:/var/log/redis
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    expose:
+      - 6379
+    networks:
+      - backend_network
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes --appendfsync everysec --save 900 1 --save 300 10 --save 60 10000 --maxmemory 128mb --maxmemory-policy allkeys-lru
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 512M
+    mem_reservation: 128M
+    cpus: "0.25"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+  swag:
+    image: lscr.io/linuxserver/swag:latest
+    container_name: swag
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - URL=${URL}
+      - SUBDOMAINS=${SUBDOMAINS}
+      - VALIDATION=${VALIDATION:-dns}
+      - DNSPLUGIN=${DNSPLUGIN:-duckdns}
+      - DUCKDNSTOKEN=${DUCKDNSTOKEN}
+      - EMAIL=${EMAIL}
+      - ONLY_SUBDOMAINS=false
+      - STAGING=${STAGING:-false}
+    volumes:
+      - ${COMMUNE_DIR}swag/config:/config
+      - ${COMMUNE_DIR}swag/logs:/var/log/swag
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+      jellyfin:
+        condition: service_healthy
+    networks:
+      - frontend_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "https://localhost/", "-k"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    mem_limit: 1G
+    mem_reservation: 256M
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+networks:
+  frontend_network:
+    driver: bridge
+  backend_network:
+    driver: bridge
