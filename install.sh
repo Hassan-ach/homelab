@@ -1,58 +1,98 @@
 #!/bin/bash
 
-# Homelab Installation Script
-# Exit on any error
+# Author: Hassan-ach
+# GitHub: https://github.com/Hassan-ach/homelab
+
 set -e
 
 # Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Function to print colored output
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+# Functions for colored output
+info()    { echo -e "${GREEN}[INFO]${NC} $1"; }
+warning() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+debug()   { echo -e "${BLUE}[DEBUG]${NC} $1"; }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
+# Banner
+echo -e "${GREEN}"
+echo "=============================================="
+echo "    Homelab Docker Compose Setup Script"
+echo "=============================================="
+echo -e "${NC}"
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Check if script is run with sudo
-if [ "$(id -u)" != "0" ]; then
-    print_error "This script must be run with sudo."
-    exit 1
+# Verify script is run with sudo
+if [ "$(id -u)" -ne 0 ]; then
+    error "This script must be run with sudo privileges."
 fi
 
 # Get the real user (not root when using sudo)
-REAL_USER=${SUDO_USER:-$USER}
-REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
-
-print_status "Running as: $REAL_USER"
-
-# Check OS compatibility
-if ! command -v apt-get &> /dev/null; then
-    print_error "This script is designed for Ubuntu/Debian systems only."
-    exit 1
+REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo 'unknown')}"
+if [ "$REAL_USER" = "unknown" ]; then
+    error "Cannot determine the real user. Please run with sudo from a regular user account."
 fi
 
-# Update and install prerequisites
-print_status "Updating system and installing prerequisites..."
+REAL_USER_HOME=$(eval echo "~$REAL_USER")
+info "Real user: $REAL_USER"
+info "Real user home: $REAL_USER_HOME"
+
+# Check if we're on Ubuntu/Debian
+if ! command -v apt-get >/dev/null 2>&1; then
+    error "This script requires Ubuntu or Debian (apt-get not found)."
+fi
+
+# Check if .env file exists
+if [ ! -f ".env" ]; then
+    error ".env file not found in current directory. Please copy .env.example to .env and configure it first."
+fi
+
+# Load environment variables
+info "Loading environment variables from .env file..."
+set -a
+# shellcheck source=/dev/null
+source .env
+set +a
+
+# Validate required environment variables
+required_vars=("COMMUNE_DIR" "PUID" "PGID" "TZ" "URL" "DUCKDNSTOKEN" "EMAIL" "ADMIN_NAME" "ADMIN_PASSWORD" "DB_ROOT_PASSWORD" "DB_NC_PASSWORD" "REDIS_PASSWORD")
+
+for var in "${required_vars[@]}"; do
+    if [ -z "${!var}" ]; then
+        error "Required environment variable $var is not set in .env file."
+    fi
+done
+
+info "Environment variables validated successfully."
+
+# Validate docker-compose file exists
+if [ ! -f "docker-compose.yml" ]; then
+    error "docker-compose.yml not found in current directory."
+fi
+
+# Update system packages
+info "Updating system packages..."
 apt-get update && apt-get upgrade -y
-apt-get install -y curl git nano ca-certificates gnupg lsb-release ufw
 
-# Check if Docker is already installed
-if command -v docker &> /dev/null; then
-    print_warning "Docker is already installed. Skipping Docker installation."
-else
-    print_status "Installing Docker..."
+# Install required packages
+info "Installing required packages..."
+apt-get install -y \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    ufw \
+    htop \
+    tree
 
-    # Remove any old Docker installations
+# Install Docker if not present
+if ! command -v docker >/dev/null 2>&1; then
+    info "Installing Docker..."
+
+    # Remove old Docker installations
     apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
 
     # Add Docker's official GPG key
@@ -63,148 +103,137 @@ else
     # Add Docker repository
     echo \
         "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-        $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
         tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-    # Install Docker
+    # Update package index and install Docker
     apt-get update
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-    print_status "Docker installed successfully."
-fi
+    # Add user to docker group
+    usermod -aG docker "$REAL_USER"
 
-# Add user to docker group
-print_status "Adding user $REAL_USER to docker group..."
-usermod -aG docker "$REAL_USER"
+    # Start and enable Docker service
+    systemctl start docker
+    systemctl enable docker
 
-# Start and enable Docker service
-systemctl start docker
-systemctl enable docker
+    info "Docker installed successfully."
+else
+    info "Docker is already installed."
 
-# Verify Docker installation
-print_status "Verifying Docker installation..."
-docker --version
-docker compose version
-
-# Check for required files
-if [ ! -f "docker-compose.yml" ]; then
-    print_error "docker-compose.yml not found in current directory."
-    print_error "Please ensure you're running this script from the correct directory."
-    exit 1
-fi
-
-if [ ! -f ".env.example" ]; then
-    print_error ".env.example file not found."
-    exit 1
-fi
-
-# Check if .env exists, if not help create it
-if [ ! -f ".env" ]; then
-    print_warning ".env file not found."
-    read -p "Would you like to copy .env.example to .env now? (y/n): " CREATE_ENV
-    if [ "$CREATE_ENV" = "y" ]; then
-        cp .env.example .env
-        print_status ".env file created from .env.example"
-        print_warning "Please edit .env file with your actual values before continuing."
-        print_warning "Pay special attention to passwords, domain, and DuckDNS token."
-        nano .env
-    else
-        print_error "Please create .env file and populate it with your variables."
-        exit 1
+    # Ensure user is in docker group
+    if ! groups "$REAL_USER" | grep -q docker; then
+        usermod -aG docker "$REAL_USER"
+        info "Added $REAL_USER to docker group."
     fi
 fi
 
-# Validate .env file
-print_status "Validating .env file..."
-source .env
-
-# Check critical variables
-MISSING_VARS=()
-[ -z "$URL" ] && MISSING_VARS+=("URL")
-[ -z "$DUCKDNSTOKEN" ] && MISSING_VARS+=("DUCKDNSTOKEN")
-[ -z "$EMAIL" ] && MISSING_VARS+=("EMAIL")
-[ -z "$ADMIN_PASSWORD" ] && MISSING_VARS+=("ADMIN_PASSWORD")
-[ -z "$DB_ROOT_PASSWORD" ] && MISSING_VARS+=("DB_ROOT_PASSWORD")
-[ -z "$DB_NC_PASSWORD" ] && MISSING_VARS+=("DB_NC_PASSWORD")
-[ -z "$REDIS_PASSWORD" ] && MISSING_VARS+=("REDIS_PASSWORD")
-
-if [ ${#MISSING_VARS[@]} -gt 0 ]; then
-    print_error "Missing required environment variables:"
-    printf '%s\n' "${MISSING_VARS[@]}"
-    print_error "Please update your .env file and try again."
-    exit 1
+# Verify Docker Compose is available
+if ! docker compose version >/dev/null 2>&1; then
+    error "Docker Compose is not available. Please check your Docker installation."
 fi
 
-# Warn about default values
-if [ "$ADMIN_PASSWORD" = "your-admin-password" ]; then
-    print_warning "You're using a default password. Please update .env with secure passwords."
-fi
+info "Docker Compose version: $(docker compose version --short)"
 
-# Create volume directories
-print_status "Creating volume directories..."
-COMMUNE_DIR=${COMMUNE_DIR%/}  # Remove trailing slash if present
+# Setup directory structure
+info "Creating directory structure at $COMMUNE_DIR..."
 
-# Create directories properly
-mkdir -p "${COMMUNE_DIR}/nextcloud/"{config,data,logs}
-mkdir -p "${COMMUNE_DIR}/jellyfin/"{config,cache,logs}
-mkdir -p "${COMMUNE_DIR}/mysql/"{data,config,logs}
-mkdir -p "${COMMUNE_DIR}/redis/"{data,logs}
-mkdir -p "${COMMUNE_DIR}/swag/"{config,logs}
+# Remove trailing slash if present
+COMMUNE_DIR=${COMMUNE_DIR%/}
+
+# Create directories with proper structure
+directories=(
+    "${COMMUNE_DIR}/nextcloud/config"
+    "${COMMUNE_DIR}/nextcloud/data"
+    "${COMMUNE_DIR}/nextcloud/logs"
+    "${COMMUNE_DIR}/jellyfin/config"
+    "${COMMUNE_DIR}/jellyfin/cache"
+    "${COMMUNE_DIR}/jellyfin/logs"
+    "${COMMUNE_DIR}/mysql/data"
+    "${COMMUNE_DIR}/mysql/config"
+    "${COMMUNE_DIR}/mysql/logs"
+    "${COMMUNE_DIR}/redis/data"
+    "${COMMUNE_DIR}/redis/logs"
+    "${COMMUNE_DIR}/swag/config"
+    "${COMMUNE_DIR}/swag/logs"
+)
+
+for dir in "${directories[@]}"; do
+    mkdir -p "$dir"
+    debug "Created directory: $dir"
+done
 
 # Set proper ownership
-chown -R "$REAL_USER":"$REAL_USER" "$COMMUNE_DIR"
+info "Setting proper ownership for directories..."
+chown -R "$PUID:$PGID" "$COMMUNE_DIR"
 
-print_status "Volume directories created and ownership set."
+# Set proper permissions
+info "Setting proper permissions..."
+find "$COMMUNE_DIR" -type d -exec chmod 755 {} \;
+find "$COMMUNE_DIR" -type f -exec chmod 644 {} \;
 
-# Configure firewall
-print_status "Configuring UFW firewall..."
-ufw --force enable
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw reload
+# Configure UFW firewall
+if command -v ufw >/dev/null 2>&1; then
+    info "Configuring UFW firewall..."
 
-print_status "Firewall configured to allow HTTP (80) and HTTPS (443)."
+    # Allow SSH (important!)
+    ufw allow 22/tcp
+
+    # Allow HTTP and HTTPS
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+
+    # Allow Jellyfin direct access (fallback)
+    ufw allow 8099/tcp
+
+    # Enable firewall (only if not already enabled)
+    if ! ufw status | grep -q "Status: active"; then
+        warning "Enabling UFW firewall. Make sure you can still access SSH!"
+        ufw --force enable
+    fi
+
+    info "Firewall rules configured."
+else
+    warning "UFW not found. Please configure firewall manually."
+fi
+
+# Validate Docker Compose file
+info "Validating Docker Compose configuration..."
+if ! docker compose config >/dev/null 2>&1; then
+    error "Docker Compose configuration is invalid. Please check your docker-compose.yml and .env files."
+fi
 
 # Start services
-print_status "Starting Docker Compose services..."
-sudo -u "$REAL_USER" docker compose up -d
+info "Starting Docker Compose stack..."
+docker compose up -d
 
-# Wait a moment for services to start
-sleep 5
+# Wait for services to start
+info "Waiting for services to initialize..."
+sleep 10
 
-# Check service status
-print_status "Checking service status..."
-sudo -u "$REAL_USER" docker compose ps
+# Show service status
+info "Service status:"
+docker compose ps
 
-# Provide post-installation information
-echo ""
-echo "=========================================="
-echo "🎉 INSTALLATION COMPLETE! 🎉"
-echo "=========================================="
-echo ""
-print_status "Your services should be accessible at:"
-echo "  • Nextcloud: https://nextcloud.$URL"
-echo "  • Jellyfin:  https://jellyfin.$URL"
-echo ""
-print_warning "IMPORTANT NEXT STEPS:"
-echo "  1. Wait 2-3 minutes for SSL certificates to be issued"
-echo "  2. Configure port forwarding on your router:"
-echo "     - Forward port 80 to ${HOSTNAME}:80"
-echo "     - Forward port 443 to ${HOSTNAME}:443"
-echo "  3. Log out and log back in for Docker group changes to take effect"
-echo ""
-print_status "USEFUL COMMANDS:"
-echo "  • Check service status:    docker compose ps"
-echo "  • View all logs:          docker compose logs"
-echo "  • View SWAG logs:         docker compose logs swag"
-echo "  • Restart services:       docker compose restart"
-echo "  • Stop services:          docker compose down"
-echo "  • Update services:        docker compose pull && docker compose up -d"
-echo ""
-print_status "TROUBLESHOOTING:"
-echo "  • If services fail to start, check: docker compose logs"
-echo "  • For SSL issues, check SWAG logs: docker compose logs swag"
-echo "  • Ensure your DuckDNS domain points to your public IP"
-echo "  • Verify ports 80/443 are forwarded in your router"
-echo ""
-echo "=========================================="
+# Show useful information
+echo
+info "✅ Installation completed successfully!"
+echo
+echo -e "${GREEN}📋 Quick Reference:${NC}"
+echo -e "  • Nextcloud:     https://${URL}/nextcloud"
+echo -e "  • Jellyfin:      https://${URL}/jellyfin"
+echo -e "  • Jellyfin (direct): http://$(hostname -I | awk '{print $1}'):8099"
+echo
+echo -e "${YELLOW}⚠️  Important Notes:${NC}"
+echo -e "  • Log out and back in for Docker group changes to take effect"
+echo -e "  • Configure SWAG and Nextcloud as described in the README"
+echo -e "  • Your data is stored in: $COMMUNE_DIR"
+echo -e "  • UFW firewall has been configured and enabled"
+echo
+echo -e "${BLUE}📖 Next Steps:${NC}"
+echo -e "  1. Configure SWAG DNS settings"
+echo -e "  2. Set up Nextcloud reverse proxy configuration"
+echo -e "  3. Complete Nextcloud and Jellyfin initial setup"
+echo -e "  4. Configure port forwarding on your router for WAN access"
+echo
+echo -e "${GREEN}🎉 Happy self-hosting!${NC}"

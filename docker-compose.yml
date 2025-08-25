@@ -1,203 +1,259 @@
+# ===============================================
+# HOMELAB DOCKER COMPOSE CONFIGURATION
+# ===============================================
+# Author: Hassan-ach
+# GitHub: https://github.com/Hassan-ach/homelab
+#
+# This docker-compose.yml sets up a complete self-hosted cloud infrastructure
+# with Nextcloud (file storage), Jellyfin (media server), and supporting services
+# Define all services that make up the homelab stack
 services:
+  # =====================================
+  # NEXTCLOUD - Self-hosted Cloud Storage
+  # =====================================
   nextcloud:
+    # Use LinuxServer.io's Nextcloud image (well-maintained, regular updates)
     image: lscr.io/linuxserver/nextcloud:latest
     container_name: nextcloud
-    restart: unless-stopped
+    restart: unless-stopped # Restart automatically unless manually stopped
+    # Volume mounts - persistent storage for Nextcloud data
     volumes:
-      - ${COMMUNE_DIR}nextcloud/config:/config
-      - ${COMMUNE_DIR}nextcloud/data:/data
-      - ${COMMUNE_DIR}nextcloud/logs:/var/log/nextcloud
+      - ${COMMUNE_DIR}nextcloud/config:/config # Nextcloud configuration files
+      - ${COMMUNE_DIR}nextcloud/data:/data # User files and app data
+      - ${COMMUNE_DIR}nextcloud/logs:/var/log/nextcloud # Application logs
+    # Environment variables for Nextcloud configuration
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - REDIS_HOST=redis
-      - REDIS_HOST_PASSWORD=${REDIS_PASSWORD}
-      - MYSQL_HOST=db
-      - MYSQL_DATABASE=${DB_NAME}
-      - MYSQL_USER=${DB_USER}
-      - MYSQL_PASSWORD=${DB_NC_PASSWORD}
-      - NEXTCLOUD_ADMIN_USER=${ADMIN_NAME}
-      - NEXTCLOUD_ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - NEXTCLOUD_TRUSTED_DOMAINS=${TRUSTED_DOMAINS}
-      - OVERWRITEPROTOCOL=https
-      - OVERWRITEHOST=${URL}
-      - APACHE_DISABLE_REWRITE_IP=1
-      - PHP_UPLOAD_LIMIT=10G
-      - APACHE_BODY_LIMIT=0
+      - PUID=${PUID} # User ID for file permissions
+      - PGID=${PGID} # Group ID for file permissions
+      - TZ=${TZ} # Timezone setting
+      - REDIS_HOST=redis # Redis container name for caching
+      - REDIS_HOST_PASSWORD=${REDIS_PASSWORD} # Redis authentication
+      - MYSQL_HOST=db # Database container name
+      - MYSQL_DATABASE=${DB_NAME} # Database name for Nextcloud
+      - MYSQL_USER=${DB_USER} # Database user for Nextcloud
+      - MYSQL_PASSWORD=${DB_NC_PASSWORD} # Database password for Nextcloud
+      - NEXTCLOUD_ADMIN_USER=${ADMIN_NAME} # Initial admin username
+      - NEXTCLOUD_ADMIN_PASSWORD=${ADMIN_PASSWORD} # Initial admin password
+      - NEXTCLOUD_TRUSTED_DOMAINS=${TRUSTED_DOMAINS} # Domains allowed to access Nextcloud
+      - OVERWRITEPROTOCOL=https # Force HTTPS protocol
+      - OVERWRITEHOST=${URL} # Override host for proper URL generation
+      - APACHE_DISABLE_REWRITE_IP=1 # Disable IP rewriting for reverse proxy
+      - PHP_UPLOAD_LIMIT=10G # Maximum file upload size
+      - APACHE_BODY_LIMIT=0 # Remove Apache body size limit
+    # Service dependencies - wait for these services to be healthy before starting
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_healthy # Wait for database to be ready
       redis:
-        condition: service_healthy
+        condition: service_healthy # Wait for Redis to be ready
+    # Network exposure - only expose port 80 internally (not to host)
     expose:
       - 80
+    # Network configuration - connect to both frontend and backend networks
     networks:
-      - frontend_network
-      - backend_network
+      - frontend_network # For communication with reverse proxy (SWAG)
+      - backend_network # For communication with database and Redis
+    # Health check to monitor service status
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/status.php"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    mem_limit: 2G
-    mem_reservation: 512M
-    cpus: "1.0"
+      test: ["CMD", "curl", "-f", "http://localhost/status.php"] # Check Nextcloud status endpoint
+      interval: 30s # Run health check every 30 seconds
+      timeout: 10s # Timeout after 10 seconds
+      retries: 3 # Retry 3 times before marking as unhealthy
+      start_period: 60s # Wait 60 seconds before starting health checks
+    # Logging configuration to prevent log files from growing too large
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "5"
+        max-size: "10m" # Maximum log file size
+        max-file: "5" # Keep 5 log files (50MB total)
+  # =====================================
+  # JELLYFIN - Media Server
+  # =====================================
   jellyfin:
+    # Use LinuxServer.io's Jellyfin image for consistency
     image: lscr.io/linuxserver/jellyfin:latest
     container_name: jellyfin
+    # Volume mounts for Jellyfin data and media access
     volumes:
-      - ${COMMUNE_DIR}jellyfin/config:/config
-      - ${COMMUNE_DIR}jellyfin/cache:/cache
-      - ${COMMUNE_DIR}nextcloud/data/media:/data:ro
-      - ${COMMUNE_DIR}jellyfin/logs:/var/log/jellyfin
-      - /dev/dri:/dev/dri
+      - ${COMMUNE_DIR}jellyfin/config:/config # Jellyfin configuration
+      - ${COMMUNE_DIR}jellyfin/cache:/cache # Transcoding cache
+      - ${COMMUNE_DIR}nextcloud/data/admin/files/Media:/data:ro # Media files (read-only)
+      - ${COMMUNE_DIR}jellyfin/logs:/var/log/jellyfin # Jellyfin logs
+    # Environment variables for Jellyfin setup
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - JELLYFIN_PublishedServerUrl=https://jellyfin.${URL}
+      - PUID=${PUID} # User ID for file permissions
+      - PGID=${PGID} # Group ID for file permissions
+      - TZ=${TZ} # Timezone setting
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_P_S_URL} # Public URL for DLNA/clients
+    # Additional group for hardware access (video group for GPU transcoding)
+    group_add:
+      - "992" # Video group ID for hardware acceleration run (getent group render) 
+    # Device access for hardware transcoding (Intel Quick Sync Video)
     devices:
-      - /dev/dri:/dev/dri
+      - /dev/dri/renderD128:/dev/dri/renderD128 # GPU device for hardware transcoding
     restart: unless-stopped
+    # Port exposure - both internal and external access
     expose:
-      - 8096
+      - 8096 # Internal port
+    ports:
+      - "8099:8096" # Map host port 8099 to container port 8096 (direct access)
+    # Network configuration - only needs frontend network for reverse proxy
     networks:
       - frontend_network
+    # Health check for Jellyfin service
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"] # Check Jellyfin health endpoint
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-    mem_limit: 2G
-    mem_reservation: 512M
-    cpus: "1.0"
+    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
+  # =====================================
+  # MARIADB - Database Server
+  # =====================================
   db:
+    # Use LinuxServer.io's MariaDB image (MySQL-compatible database)
     image: lscr.io/linuxserver/mariadb:latest
     container_name: mariadb
+    # Volume mounts for database persistence
     volumes:
-      - ${COMMUNE_DIR}mysql/data:/var/lib/mysql
-      - ${COMMUNE_DIR}mysql/config:/config
-      - ${COMMUNE_DIR}mysql/logs:/var/log/mysql
+      - ${COMMUNE_DIR}mysql/data:/var/lib/mysql # Database files (persistent storage)
+      - ${COMMUNE_DIR}mysql/config:/config # Database configuration
+      - ${COMMUNE_DIR}mysql/logs:/var/log/mysql # Database logs
+    # Database configuration via environment variables
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
-      - MYSQL_PASSWORD=${DB_NC_PASSWORD}
-      - MYSQL_DATABASE=${DB_NAME}
-      - MYSQL_USER=${DB_USER}
+      - PUID=${PUID} # User ID for file permissions
+      - PGID=${PGID} # Group ID for file permissions
+      - TZ=${TZ} # Timezone setting
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD} # Root user password (for admin)
+      - MYSQL_PASSWORD=${DB_NC_PASSWORD} # Password for Nextcloud database user
+      - MYSQL_DATABASE=${DB_NAME} # Create database for Nextcloud
+      - MYSQL_USER=${DB_USER} # Create user for Nextcloud
     restart: unless-stopped
+    # Only expose database port internally (security best practice)
     expose:
       - 3306
+    # Only connect to backend network (database should not be accessible from frontend)
     networks:
       - backend_network
-    command: >
-      --transaction-isolation=READ-COMMITTED --binlog-format=ROW --innodb-buffer-pool-size=128M --max-connections=50 --innodb-flush-log-at-trx-commit=2 --innodb-log-buffer-size=16M --max-allowed-packet=64M
-
+    # Health check to ensure database is ready before other services start
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 5 # More retries for database as it takes longer to start
       start_period: 60s
-    mem_limit: 1G
-    mem_reservation: 256M
-    cpus: "0.5"
+    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
+  # =====================================
+  # REDIS - Caching and Session Storage
+  # =====================================
   redis:
+    # Use official Redis Alpine image (lightweight)
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
+    # Volume mounts for Redis data persistence
     volumes:
-      - ${COMMUNE_DIR}redis/data:/data
-      - ${COMMUNE_DIR}redis/logs:/var/log/redis
+      - ${COMMUNE_DIR}redis/data:/data # Redis data files
+      - ${COMMUNE_DIR}redis/logs:/var/log/redis # Redis logs
+    # Environment variable for Redis password
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
+    # Only expose Redis port internally
     expose:
       - 6379
+    # Only connect to backend network
     networks:
       - backend_network
+    # Custom command to start Redis with password authentication
     command: >
-      redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes --appendfsync everysec --save 900 1 --save 300 10 --save 60 10000 --maxmemory 128mb --maxmemory-policy allkeys-lru
+      redis-server --requirepass ${REDIS_PASSWORD}
 
+    # Health check for Redis service
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"] # Ping Redis with authentication
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
-    mem_limit: 512M
-    mem_reservation: 128M
-    cpus: "0.25"
+      start_period: 30s # Redis starts faster than database
+    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
+  # =====================================
+  # SWAG - Reverse Proxy with SSL
+  # =====================================
   swag:
+    # Use LinuxServer.io's SWAG image (Nginx + Let's Encrypt + Fail2ban)
     image: lscr.io/linuxserver/swag:latest
     container_name: swag
+    # Network capability for advanced networking features
     cap_add:
-      - NET_ADMIN
+      - NET_ADMIN # Required for network management and Fail2ban
+    # Environment variables for SWAG configuration
     environment:
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - URL=${URL}
-      - SUBDOMAINS=${SUBDOMAINS}
-      - VALIDATION=${VALIDATION:-dns}
-      - DNSPLUGIN=${DNSPLUGIN:-duckdns}
-      - DUCKDNSTOKEN=${DUCKDNSTOKEN}
-      - EMAIL=${EMAIL}
-      - ONLY_SUBDOMAINS=false
-      - STAGING=${STAGING:-false}
+      - PUID=${PUID} # User ID for file permissions
+      - PGID=${PGID} # Group ID for file permissions
+      - TZ=${TZ} # Timezone setting
+      - URL=${URL} # Main domain name
+      - SUBDOMAINS=${SUBDOMAINS} # Subdomains for SSL certificates
+      - VALIDATION=${VALIDATION:-dns} # Certificate validation method (default: dns)
+      - DNSPLUGIN=${DNSPLUGIN:-duckdns} # DNS plugin for validation (default: duckdns)
+      - DUCKDNSTOKEN=${DUCKDNSTOKEN} # DuckDNS token for DNS validation
+      - EMAIL=${EMAIL} # Email for Let's Encrypt registration
+      - ONLY_SUBDOMAINS=false # Also create certificate for main domain
+      - STAGING=${STAGING:-false} # Use Let's Encrypt staging server (default: false)
+    # Volume mounts for SWAG configuration and certificates
     volumes:
-      - ${COMMUNE_DIR}swag/config:/config
-      - ${COMMUNE_DIR}swag/logs:/var/log/swag
+      - ${COMMUNE_DIR}swag/config:/config # Nginx config and SSL certificates
+      - ${COMMUNE_DIR}swag/logs:/var/log/swag # SWAG logs
+    # Port mapping - expose HTTP and HTTPS to the host
     ports:
-      - "80:80"
-      - "443:443"
+      - "80:80" # HTTP port (redirects to HTTPS)
+      - "443:443" # HTTPS port (main entry point)
     restart: unless-stopped
+    # Dependencies - wait for backend services to be healthy before starting
     depends_on:
       nextcloud:
-        condition: service_healthy
+        condition: service_healthy # Ensure Nextcloud is ready for proxying
       jellyfin:
-        condition: service_healthy
+        condition: service_healthy # Ensure Jellyfin is ready for proxying
+    # Only connect to frontend network (reverse proxy isolation)
     networks:
       - frontend_network
+    # Health check for SWAG service
     healthcheck:
-      test: ["CMD", "curl", "-f", "https://localhost/", "-k"]
+      test: ["CMD", "curl", "-f", "https://localhost/", "-k"] # Check HTTPS endpoint (ignore SSL for localhost)
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 90s
-    mem_limit: 1G
-    mem_reservation: 256M
-    cpus: "0.5"
+      start_period: 90s # SWAG takes longer to start (certificate generation)
+    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
+# =====================================
+# NETWORK CONFIGURATION
+# =====================================
+# Define custom networks for service isolation and communication
 networks:
+  # Frontend network - for communication between reverse proxy and web services
   frontend_network:
-    driver: bridge
+    driver: bridge # Use bridge driver for container communication
+  # Backend network - for communication between web services and databases
   backend_network:
-    driver: bridge
+    driver: bridge # Use bridge driver for container communication
