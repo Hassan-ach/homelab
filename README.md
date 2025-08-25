@@ -92,6 +92,12 @@ commune/
 
 ```
 
+## Architecture
+
+<div align="center">
+  <img src="docs/Docker_Arch.png" alt="Docker Architecture" width="95%"/>
+</div>
+
 ## Installation
 
 ### 1. Clone the Repository
